@@ -1,0 +1,30 @@
+[package]
+name = "red-heart"
+version = "0.1.0"
+edition = "2018"
+license = "MIT/Apache-2.0"
+repository = "git@github.com:etactica/red-heart.git"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+cortex-m = "0.6.7"
+cortex-m-rt = "0.6.7"
+embedded-hal = { version = "0.2.3", features = ["unproven"] }
+# No releases of this yet.
+stm32wb55 = { git = "https://github.com/eupn/stm32wb55", rev="fc16aeb208785" }
+# have to specify our package size apparently...
+stm32wb-hal = { version = "0.1.1" , features=["xG-package"]}
+
+bbqueue = "0.4"
+bluetooth-hci = "0.1"
+nb = "1.0"
+rtt-target = { version = "0.3.1", features = ["cortex-m"]}
+panic-rtt-target = { version = "0.1.2", features = ["cortex-m"] }
+
+# The Tiwalun demos required this, and it's been merged, so... use it too.
+[patch.crates-io]
+bluetooth-hci = { git = "https://github.com/danielgallagher0/bluetooth-hci", branch = "master" }
+
+
+
