@@ -170,20 +170,6 @@ unsafe fn DefaultHandler(irqn: i16) -> ! {
     panic!("Unhandled IRQ: {}", irqn);
 }
 
-fn get_bd_addr() -> BdAddr {
-    let mut bytes = [0u8; 6];
-
-    let lhci_info = LhciC1DeviceInformationCcrp::new();
-    bytes[0] = (lhci_info.uid64 & 0xff) as u8;
-    bytes[1] = ((lhci_info.uid64 >> 8) & 0xff) as u8;
-    bytes[2] = ((lhci_info.uid64 >> 16) & 0xff) as u8;
-    bytes[3] = lhci_info.device_type_id;
-    bytes[4] = (lhci_info.st_company_id & 0xff) as u8;
-    bytes[5] = (lhci_info.st_company_id >> 8 & 0xff) as u8;
-
-    BdAddr(bytes)
-}
-
 fn init_gap_and_gatt() -> Result<(), ()> {
     let response = perform_command(|rc: &mut RadioCopro| {
         rc.write_config_data(&ConfigData::public_address(get_bd_addr()).build())
@@ -320,7 +306,6 @@ fn init_dis() -> Result<(), ()> {
             .map_err(|_| nb::Error::Other(()))
     })?;
 
-
     // hciCmdResult = aci_gatt_add_service(UUID_TYPE_16,
     //                                     (Service_UUID_t *) &uuid,
     //                                     PRIMARY_SERVICE,
@@ -328,7 +313,20 @@ fn init_dis() -> Result<(), ()> {
     //                                     1,
     //                                     &(DIS_Context.DeviceInformationSvcHdle));
     //
+}
 
+fn get_bd_addr() -> BdAddr {
+    let mut bytes = [0u8; 6];
+
+    let lhci_info = LhciC1DeviceInformationCcrp::new();
+    bytes[0] = (lhci_info.uid64 & 0xff) as u8;
+    bytes[1] = ((lhci_info.uid64 >> 8) & 0xff) as u8;
+    bytes[2] = ((lhci_info.uid64 >> 16) & 0xff) as u8;
+    bytes[3] = lhci_info.device_type_id;
+    bytes[4] = (lhci_info.st_company_id & 0xff) as u8;
+    bytes[5] = (lhci_info.st_company_id >> 8 & 0xff) as u8;
+
+    BdAddr(bytes)
 }
 
 fn get_random_addr() -> BdAddr {
