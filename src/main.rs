@@ -42,6 +42,9 @@ use stm32wb55::{
 };
 
 mod ble;
+mod svc_dis;
+
+use svc_dis::dis::{self, uuid};
 
 /// Advertisement interval in milliseconds.
 const ADV_INTERVAL_MS: u64 = 250;
@@ -203,6 +206,7 @@ fn init_gap_and_gatt() -> Result<(), ()> {
     let return_params =
         perform_command(|rc| rc.init_gap(Role::PERIPHERAL, false, BLE_GAP_DEVICE_NAME_LENGTH))?;
 
+    // let sh, dh, ah == return parameters... if it was of the type of GapInit ReturnParameters....?
     let (service_handle, dev_name_handle, appearence_handle) = if let ReturnParameters::Vendor(
         stm32wb55::event::command::ReturnParameters::GapInit(stm32wb55::event::command::GapInit {
             service_handle,
@@ -308,6 +312,23 @@ fn init_eddystone() -> Result<(), ()> {
     })?;
 
     return Ok(());
+}
+
+fn init_dis() -> Result<(), ()> {
+    perform_command(|rc: &mut RadioCopro| {
+        rc.add_service(&my_dis_service_params)
+            .map_err(|_| nb::Error::Other(()))
+    })?;
+
+
+    // hciCmdResult = aci_gatt_add_service(UUID_TYPE_16,
+    //                                     (Service_UUID_t *) &uuid,
+    //                                     PRIMARY_SERVICE,
+    //                                     // count lengths..
+    //                                     1,
+    //                                     &(DIS_Context.DeviceInformationSvcHdle));
+    //
+
 }
 
 fn get_random_addr() -> BdAddr {
