@@ -7,7 +7,7 @@ use panic_rtt_target as _;
 // use panic_halt as _;
 use rtt_target::{rprintln, rtt_init_print};
 
-extern crate stm32wb_hal as hal;
+use stm32wb_hal as hal;
 
 use core::{convert::TryFrom, future::Pending, time::Duration};
 
@@ -44,12 +44,12 @@ use stm32wb55::{
 mod ble;
 mod svc_dis;
 
-use svc_dis::dis::{self, uuid};
+use svc_dis::{uuid, DeviceInformation, DisService, DisCharacteristic};
 
 /// Advertisement interval in milliseconds.
 const ADV_INTERVAL_MS: u64 = 250;
 
-const BT_NAME: &[u8] = b"BEACON";
+const BT_NAME: &[u8] = b"KToy";
 const BLE_GAP_DEVICE_NAME_LENGTH: u8 = BT_NAME.len() as u8;
 
 // Setup Eddystone beacon to advertise this URL:
@@ -148,9 +148,11 @@ fn run() {
 
     rprintln!("Succesfully initialized GAP and GATT");
 
-    init_eddystone().expect("Failed to initialize eddystone setup");
+    //init_eddystone().expect("Failed to initialize eddystone setup");
 
-    rprintln!("Succesfully initialized eddystone");
+    //rprintln!("Succesfully initialized eddystone");
+
+    init_dis().expect("failed to activate DIS");
 
     loop {
         let response = block!(receive_event());
@@ -301,18 +303,47 @@ fn init_eddystone() -> Result<(), ()> {
 }
 
 fn init_dis() -> Result<(), ()> {
+
+
+    // homekit demo uses 24, st uses max 19, 2 per char, plus 1.
+    // using less than required here saves memory in the shared space I believe, so, ideally, this would
+    // check how many "real" values are configured in the "DisServiceInfo" blob....
+    let dis_service = DisService::new(svc_dis::uuid::DEVICE_INFORMATION_SERVICE, 19)?;
+
+    let dis_char_manuf = DisCharacteristic::build(
+        &dis_service,
+        svc_dis::uuid::MANUFACTURER_NAME,
+        CharacteristicProperty::READ,
+        64,  // TODO - this is an upper limit of what people could set to us as welll..
+    )?;
+    dis_char_manuf.set_value(b"ekta labs")?;
+
+    let dis_char_serial = DisCharacteristic::build(
+        &dis_service,
+        svc_dis::uuid::SERIAL_NUMBER,
+        CharacteristicProperty::READ,
+        64,  // TODO - this is an upper limit of what people could set to us as welll..
+    )?;
+    dis_char_serial.set_value(b"123-456")?;
+
+    // do we ever need to return the dis service? or it's chars? not now anyway..
+
+
+
+    // Disable scan response
     perform_command(|rc: &mut RadioCopro| {
-        rc.add_service(&my_dis_service_params)
+        rc.le_set_scan_response_data(&[])
             .map_err(|_| nb::Error::Other(()))
     })?;
 
-    // hciCmdResult = aci_gatt_add_service(UUID_TYPE_16,
-    //                                     (Service_UUID_t *) &uuid,
-    //                                     PRIMARY_SERVICE,
-    //                                     // count lengths..
-    //                                     1,
-    //                                     &(DIS_Context.DeviceInformationSvcHdle));
-    //
+    // Put the device in a connectable mode
+    perform_command(|rc| {
+        rc.set_discoverable(&DISCOVERY_PARAMS)
+            .map_err(|_| nb::Error::Other(()))
+    })?;
+
+
+    return Ok(());
 }
 
 fn get_bd_addr() -> BdAddr {
@@ -359,7 +390,7 @@ fn get_erk() -> EncryptionKey {
 }
 
 const DISCOVERY_PARAMS: DiscoverableParameters = DiscoverableParameters {
-    advertising_type: AdvertisingType::NonConnectableUndirected,
+    advertising_type: AdvertisingType::ConnectableUndirected,
     advertising_interval: Some((
         Duration::from_millis(ADV_INTERVAL_MS),
         Duration::from_millis(ADV_INTERVAL_MS),
@@ -367,7 +398,7 @@ const DISCOVERY_PARAMS: DiscoverableParameters = DiscoverableParameters {
     address_type: OwnAddressType::Public,
     filter_policy: AdvertisingFilterPolicy::AllowConnectionAndScan,
     // Local name should be empty for the device to be recognized as an Eddystone beacon
-    local_name: None,
+    local_name: Some(LocalName::Complete(BT_NAME)),
     advertising_data: &[],
     conn_interval: (None, None),
 };
