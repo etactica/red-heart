@@ -1,0 +1,27 @@
+AN5270 is the key here, with all the hci/aci functions!
+
+
+APP_BLE_Init()
+ # init_gap_gatt()
+ # SVCCTL_INIT() --> SVCCTL_Svc_init()
+ ## DIS_Init()
+      initialized the DIS_Context to 0.  (this is placed in ram explicitly?! (is BLE_DRIVER_CONTEXT just null though? I think I remmeber that from earlier reading (yes, ST says gone https://community.st.com/s/question/0D53W00000pQuUm/stm32wb-placeinsection)
+      aci_gatt_add_service....
+      aci_gatt_add_char() for each variable, which provides a char handle back into the context.
+ ## HRS_Init()
+      registers a service handler.
+      aci_gatt_add_service
+      aci_gatt_add_char() for each variable 
+      if OTA: aci_gatt_add_char() for that one too 
+ ## Kustom_init()
+      blah....
+   
+Later....
+
+ ## DISAPP_Init()
+     DIS_Data_t setup.  just a holder to pass into the dis_updatechar, pretty useless.
+     DIS_UpdateChar() for each of them, one by one...
+         which is aci_gatt_update_char_value
+     ... That's it, there doesn't seem to be much reason to split this into two pieces?    
+           
+ ## HRSAPP_Init()
