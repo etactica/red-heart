@@ -44,14 +44,13 @@ use stm32wb55::{
 mod ble;
 mod svc_dis;
 
-use svc_dis::{uuid, DeviceInformation, DisService, DisCharacteristic};
+use svc_dis::{uuid, DeviceInformation, DisCharacteristic, DisService};
 
 /// Advertisement interval in milliseconds.
 const ADV_INTERVAL_MS: u64 = 250;
 
 const BT_NAME: &[u8] = b"KToy";
 const BLE_GAP_DEVICE_NAME_LENGTH: u8 = BT_NAME.len() as u8;
-
 
 // const MY_DEVICE_INFO: DeviceInformation = DeviceInformation {
 //     fw_revision: Some("fw1.23"),
@@ -156,7 +155,17 @@ fn run() {
 
     rprintln!("Succesfully initialized GAP and GATT");
 
-    let di = DeviceInformation::new(Some("klabs"), Some("9871234"), Some("my-serial"), None, None, Some("fw1.234"), Some("my-system-id"), None, None);
+    let di = DeviceInformation::new(
+        Some("klabs"),
+        Some("9871234"),
+        Some("my-serial"),
+        None,
+        None,
+        Some("fw1.234"),
+        Some("my-system-id"),
+        None,
+        None,
+    );
 
     init_dis(&di).expect("failed to activate DIS");
     //init_hrs().expect("failed to activate heart rate service");
@@ -168,7 +177,6 @@ fn run() {
             .map_err(|_| nb::Error::Other(()))
     });
 
-
     loop {
         let response = block!(receive_event());
 
@@ -176,11 +184,47 @@ fn run() {
 
         if let Ok(Packet::Event(event)) = response {
             match event {
-                other => rprintln!("ignoring event {:?}", other),
+                // karl - this isn't quite working...
+                Event::DisconnectionComplete(_state) => {
+                    // Enter advertising mode again
+                    // Put the device in a connectable mode
+                    perform_command(|rc| {
+                        rc.set_discoverable(&DISCOVERY_PARAMS)
+                            .map_err(|_| nb::Error::Other(()))
+                    })
+                    .expect("Failed to enable discoverable mode again");
+
+                    // perform_command(|rc| {
+                    //     rc.update_advertising_data(&ADVERTISING_DATA[..])
+                    //         .map_err(|_| nb::Error::Other(()))
+                    // })
+                    // .expect("Failed to update advertising data");
+                }
+
+                _ => handle_event(&event),
             }
         }
     }
 }
+
+fn handle_event(event: &Event<Stm32Wb5xEvent>) {
+    if let Event::Vendor(stm_event) = event {
+        match stm_event {
+            Stm32Wb5xEvent::AttReadPermitRequest(AttReadPermitRequest {
+                                                     conn_handle,
+                                                     attribute_handle,
+                                                     offset,
+                                                 }) => {
+                rprintln!("Allowing read on ch: {:?} ah: {:?}, offset: {}", conn_handle, attribute_handle, offset);
+                perform_command(|rc| rc.allow_read(*conn_handle))
+                    .expect("Failed to allow read");
+            }
+
+            other => rprintln!("ignoring event {:?}", other),
+        }
+    }
+}
+
 
 #[exception]
 unsafe fn DefaultHandler(irqn: i16) -> ! {
@@ -246,14 +290,11 @@ fn init_gap_and_gatt() -> Result<(), ()> {
 }
 
 fn init_dis(di: &DeviceInformation) -> Result<DisService, ()> {
-
-
     // homekit demo uses 24, st uses max 19, 2 per char, plus 1.
     // using less than required here saves memory in the shared space I believe, so, ideally, this would
     // check how many "real" values are configured in the "DisServiceInfo" blob....
     let dis_service = DisService::new(svc_dis::uuid::DEVICE_INFORMATION_SERVICE, 19)?;
     di.register(&dis_service);
-
 
     // FIXME - neither of these should be in this function, it makes it hard to compose services...
     // Disable scan response.  not even sure we need this at all.

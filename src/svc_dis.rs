@@ -185,7 +185,7 @@ impl DisCharacteristic {
         let characteristic = service.service.add_characteristic(
             &Uuid::Uuid16(uuid),
             ble_properties,
-            CharacteristicEvent::empty(),
+            CharacteristicEvent::CONFIRM_READ,
             characteristic_len,
             true,
         )?;
