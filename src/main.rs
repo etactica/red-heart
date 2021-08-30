@@ -1,4 +1,4 @@
-//! BLE Eddystone URL beacon example.
+// ~Similar to the ST Heart Rate Sensor example
 #![no_main]
 #![no_std]
 #![allow(non_snake_case)]
@@ -9,7 +9,7 @@ use rtt_target::{rprintln, rtt_init_print};
 
 use stm32wb_hal as hal;
 
-use core::{convert::TryFrom, future::Pending, time::Duration};
+use core::time::Duration;
 
 use cortex_m_rt::{entry, exception};
 use nb::block;
@@ -52,11 +52,19 @@ const ADV_INTERVAL_MS: u64 = 250;
 const BT_NAME: &[u8] = b"KToy";
 const BLE_GAP_DEVICE_NAME_LENGTH: u8 = BT_NAME.len() as u8;
 
-// Setup Eddystone beacon to advertise this URL:
-// https://www.rust-lang.org
-const EDDYSTONE_URL_PREFIX: EddystoneUrlScheme = EddystoneUrlScheme::HttpsWww;
-const EDDYSTONE_URL: &[u8] = b"rust-lang.com";
-const CALIBRATED_TX_POWER_AT_0_M: u8 = -22_i8 as u8;
+
+// const MY_DEVICE_INFO: DeviceInformation = DeviceInformation {
+//     fw_revision: Some("fw1.23"),
+//     manufacturer_name: Some("demo Company"),
+//     model_number: None,
+//     serial_number: None,
+//     system_id: Some("sysid69"),
+//     ieee_cert: None,
+//     hw_revision: None,
+//     sw_revision: None,
+//     pnp_id: None
+// };
+//
 
 #[entry]
 fn entry() -> ! {
@@ -148,11 +156,18 @@ fn run() {
 
     rprintln!("Succesfully initialized GAP and GATT");
 
-    //init_eddystone().expect("Failed to initialize eddystone setup");
+    let di = DeviceInformation::new(Some("klabs"), Some("9871234"), Some("my-serial"), None, None, Some("fw1.234"), Some("my-system-id"), None, None);
 
-    //rprintln!("Succesfully initialized eddystone");
+    init_dis(&di).expect("failed to activate DIS");
+    //init_hrs().expect("failed to activate heart rate service");
 
-    init_dis().expect("failed to activate DIS");
+    // Set our discovery parameters, this is "application specific" regardless of what services
+    // we've turned on
+    perform_command(|rc| {
+        rc.set_discoverable(&DISCOVERY_PARAMS)
+            .map_err(|_| nb::Error::Other(()))
+    });
+
 
     loop {
         let response = block!(receive_event());
@@ -230,120 +245,24 @@ fn init_gap_and_gatt() -> Result<(), ()> {
     return Ok(());
 }
 
-#[derive(Copy, Clone)]
-#[allow(dead_code)]
-enum EddystoneUrlScheme {
-    HttpWww = 0x00,
-    HttpsWww = 0x01,
-    Http = 0x02,
-    Https = 0x03,
-}
-
-fn init_eddystone() -> Result<(), ()> {
-    perform_command(|rc: &mut RadioCopro| {
-        rc.le_set_scan_response_data(&[])
-            .map_err(|_| nb::Error::Other(()))
-    })?;
-
-    // non-connectable mode...
-    perform_command(|rc| {
-        rc.set_discoverable(&DISCOVERY_PARAMS)
-            .map_err(|_| nb::Error::Other(()))
-    })?;
-
-    // remove some advertisements
-    perform_command(|rc| rc.delete_ad_type(AdvertisingDataType::TxPowerLevel))?;
-    perform_command(|rc| rc.delete_ad_type(AdvertisingDataType::PeripheralConnectionInterval))?;
-
-    perform_command(|rc| {
-        let url_len = EDDYSTONE_URL.len();
-
-        let mut service_data = [0u8; 24];
-        service_data[0] = 6 + url_len as u8;
-        service_data[1] = AdvertisingDataType::ServiceData as u8;
-
-        // 16-bit Eddystone UUID
-        service_data[2] = 0xAA;
-        service_data[3] = 0xFE;
-
-        service_data[4] = 0x10; // URL frame type
-        service_data[5] = CALIBRATED_TX_POWER_AT_0_M;
-        service_data[6] = EDDYSTONE_URL_PREFIX as u8;
-
-        service_data[7..(7 + url_len)].copy_from_slice(EDDYSTONE_URL);
-
-        rc.update_advertising_data(&service_data[..])
-            .map_err(|_| nb::Error::Other(()))
-    })?;
-
-    perform_command(|rc| {
-        let service_uuid_list = [
-            3_u8,
-            AdvertisingDataType::UuidCompleteList16 as u8,
-            0xAA,
-            0xFE,
-        ];
-
-        rc.update_advertising_data(&service_uuid_list[..])
-            .map_err(|_| nb::Error::Other(()))
-    })?;
-
-    perform_command(|rc| {
-        let flags = [
-            2,
-            AdvertisingDataType::Flags as u8,
-            (0x02 | 0x04) as u8, // BLE general discoverable, without BR/EDR support.
-        ];
-
-        rc.update_advertising_data(&flags[..])
-            .map_err(|_| nb::Error::Other(()))
-    })?;
-
-    return Ok(());
-}
-
-fn init_dis() -> Result<(), ()> {
+fn init_dis(di: &DeviceInformation) -> Result<DisService, ()> {
 
 
     // homekit demo uses 24, st uses max 19, 2 per char, plus 1.
     // using less than required here saves memory in the shared space I believe, so, ideally, this would
     // check how many "real" values are configured in the "DisServiceInfo" blob....
     let dis_service = DisService::new(svc_dis::uuid::DEVICE_INFORMATION_SERVICE, 19)?;
-
-    let dis_char_manuf = DisCharacteristic::build(
-        &dis_service,
-        svc_dis::uuid::MANUFACTURER_NAME,
-        CharacteristicProperty::READ,
-        64,  // TODO - this is an upper limit of what people could set to us as welll..
-    )?;
-    dis_char_manuf.set_value(b"ekta labs")?;
-
-    let dis_char_serial = DisCharacteristic::build(
-        &dis_service,
-        svc_dis::uuid::SERIAL_NUMBER,
-        CharacteristicProperty::READ,
-        64,  // TODO - this is an upper limit of what people could set to us as welll..
-    )?;
-    dis_char_serial.set_value(b"123-456")?;
-
-    // do we ever need to return the dis service? or it's chars? not now anyway..
+    di.register(&dis_service);
 
 
+    // FIXME - neither of these should be in this function, it makes it hard to compose services...
+    // Disable scan response.  not even sure we need this at all.
+    // perform_command(|rc: &mut RadioCopro| {
+    //     rc.le_set_scan_response_data(&[])
+    //         .map_err(|_| nb::Error::Other(()))
+    // })?;
 
-    // Disable scan response
-    perform_command(|rc: &mut RadioCopro| {
-        rc.le_set_scan_response_data(&[])
-            .map_err(|_| nb::Error::Other(()))
-    })?;
-
-    // Put the device in a connectable mode
-    perform_command(|rc| {
-        rc.set_discoverable(&DISCOVERY_PARAMS)
-            .map_err(|_| nb::Error::Other(()))
-    })?;
-
-
-    return Ok(());
+    return Ok(dis_service);
 }
 
 fn get_bd_addr() -> BdAddr {
