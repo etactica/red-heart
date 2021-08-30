@@ -16,6 +16,7 @@ stm32wb55 = { git = "https://github.com/eupn/stm32wb55", rev="fc16aeb208785" }
 # have to specify our package size apparently...
 stm32wb-hal = { version = "0.1.1" , features=["xG-package"]}
 
+bitflags = "1.3"
 bbqueue = "0.4"
 bluetooth-hci = "0.1"
 nb = "1.0"

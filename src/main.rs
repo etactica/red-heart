@@ -43,8 +43,13 @@ use stm32wb55::{
 
 mod ble;
 mod svc_dis;
+mod svc_hrs;
 
 use svc_dis::{uuid, DeviceInformation, DisCharacteristic, DisService};
+use svc_hrs::{HrsService, HrsBodySensorLocation, HrsHrmFlags};
+use crate::ble::Service;
+use crate::svc_hrs::HrsMeasure;
+use core::mem::transmute;
 
 /// Advertisement interval in milliseconds.
 const ADV_INTERVAL_MS: u64 = 250;
@@ -167,8 +172,8 @@ fn run() {
         None,
     );
 
-    init_dis(&di).expect("failed to activate DIS");
-    //init_hrs().expect("failed to activate heart rate service");
+    let dis_service = init_dis(&di).expect("failed to activate DIS");
+    let hrs_service = init_hrs().expect("failed to activate heart rate service");
 
     // Set our discovery parameters, this is "application specific" regardless of what services
     // we've turned on
@@ -200,14 +205,16 @@ fn run() {
                     // })
                     // .expect("Failed to update advertising data");
                 }
-
-                _ => handle_event(&event),
+                // FIXME - I want some sort of "list of event handlers" that can be plugged in here?
+                // ST style has a list of handlers, and stops at the first one to say "handled"
+                _ => handle_event(&event, &dis_service, &hrs_service),
             }
         }
     }
 }
 
-fn handle_event(event: &Event<Stm32Wb5xEvent>) {
+fn handle_event(event: &Event<Stm32Wb5xEvent>, dis: &DisService, hrs: &HrsService) {
+
     if let Event::Vendor(stm_event) = event {
         match stm_event {
             Stm32Wb5xEvent::AttReadPermitRequest(AttReadPermitRequest {
@@ -304,6 +311,42 @@ fn init_dis(di: &DeviceInformation) -> Result<DisService, ()> {
     // })?;
 
     return Ok(dis_service);
+}
+
+// https://stackoverflow.com/questions/28127165/how-to-convert-struct-to-u8
+// except we have no std....
+// unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
+//     ::std::slice::from_raw_parts(
+//         (p as *const T) as *const u8,
+//         ::std::mem::size_of::<T>(),
+//     )
+// }
+
+fn init_hrs() -> Result<HrsService, ()> {
+    // analog to hrs_init
+    let hrs_service = HrsService::new(true, true, true)?;
+
+    // analog to hrsapp_init...
+    if hrs_service.with_location {
+        let loc = HrsBodySensorLocation::Finger as u8;
+        hrs_service.body_sensor_location.unwrap().set_value(&loc.to_le_bytes());
+    }
+
+    let mut hrs_measure = HrsMeasure {
+        value: 1,
+        energy_expended: 100,
+        aRR_interval_values: [200],
+        valid_intervals: 1,
+        flags: HrsHrmFlags::ValueFormatUint16 | HrsHrmFlags::SensorContactsPresent | HrsHrmFlags::SensorContactsSupport | HrsHrmFlags::EnergyExpendedPresent | HrsHrmFlags::RRIntervalPresent,
+    };
+    // TODO We need to keep that hrs_measure around somewhere, and get our task to start processing periodic events for it....
+    // and now we need to splat it into a u8 array too!
+    //let bytes: &[u8] = unsafe { any_as_u8_slice(&hrs_measure) };
+    let bytes: &[u8] = transmute<HrsMeasure, &[u8]>(hrs_measure);
+    hrs_service.heart_rate_measurement.set_value(bytes);
+
+    return Ok(hrs_service);
+
 }
 
 fn get_bd_addr() -> BdAddr {
