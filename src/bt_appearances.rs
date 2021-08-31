@@ -1,4 +1,5 @@
 // Implementation based on "opcodes.rs" from the bluetooth-hci project.
+// Values from BT sig rev 2021-04-20
 
 pub struct Appearance(pub u16);
 
@@ -40,15 +41,16 @@ macro_rules! appearances {
     }
 }
 
+// TODO - many of these haven't had the full tables dumped in yet!
 appearances! {
     Unknown = 0x000;
     {
-        pub const GENERIC = 0x0000;
+        pub const GENERIC = 0x00;
     }
 
     Phone = 0x001;
     {
-        pub const GENERIC = 0x0000;
+        pub const GENERIC = 0x00;
     }
 
     Computer = 0x002;
@@ -78,10 +80,100 @@ appearances! {
         pub const SMART = 0x02;
     }
 
+    Clock = 0x004;
+    {
+        pub const GENERIC = 0x00;
+    }
+
+    Display = 0x005;
+    {
+        pub const GENERIC = 0x00;
+    }
+
+    RemoteControl = 0x006;
+    {
+        pub const GENERIC = 0x00;
+    }
+
+    EyeGlasses = 0x007;
+    {
+        pub const GENERIC = 0x00;
+    }
+
+    Tag = 0x008;
+    {
+        pub const GENERIC = 0x00;
+    }
+
+    Keyring = 0x009;
+    {
+        pub const GENERIC = 0x00;
+    }
+    MediaPlayer = 0x00a;
+    {
+        pub const GENERIC = 0x00;
+    }
+    BarcodeScanner = 0x00b;
+    {
+        pub const GENERIC = 0x00;
+    }
+    Thermometer = 0x00c;
+    {
+        pub const GENERIC = 0x00;
+        pub const EAR = 0x01;
+    }
+
     HeartRateSensor = 0x00d;
     {
         pub const GENERIC = 0x00;
         pub const BELT = 0x01;
+    }
+
+    BloodPressure = 0x00e;
+    {
+        pub const GENERIC = 0x00;
+        pub const ARM = 0x01;
+        pub const WRIST = 0x02;
+    }
+    HumanInterfaceDevice = 0x00f;
+    {
+        pub const GENERIC = 0x00;
+        pub const KEYBOARD = 0x01;
+        pub const MOUSE = 0x02;
+        pub const JOYSTICK = 0x03;
+        pub const GAMEPAD = 0x04;
+        pub const DIGITIZER_TABLE = 0x05;
+        pub const CARD_READER = 0x06;
+        pub const DIGITAL_PEN = 0x07;
+        pub const BARCODE_SCANNER = 0x08;
+    }
+    GlucoseMeter = 0x010;
+    {
+        pub const GENERIC = 0x00;
+    }
+    RunningWalkingSensor = 0x011;
+    {
+        pub const GENERIC = 0x00;
+        pub const IN_SHOE = 0x01;
+        pub const ON_SHOE = 0x02;
+        pub const ON_HIP = 0x03;
+    }
+    Cycling = 0x012;
+    {
+        pub const GENERIC = 0x00;
+        pub const COMPUTER = 0x01;
+        pub const SPEED_SENSOR = 0x02;
+        pub const CADENCE_SENSOR = 0x03;
+        pub const POWER_SENSOR = 0x04;
+        pub const SPEED_CADENCE_SENSOR = 0x05;
+    }
+    ControlDevice = 0x013;
+    {
+        pub const GENERIC = 0x00;
+    }
+    NetworkDevice = 0x014;
+    {
+        pub const GENERIC = 0x00;
     }
 
     Sensor = 0x015;
@@ -113,5 +205,122 @@ appearances! {
         pub const FLAME_DETECTOR = 0x18;
         pub const VEHICLE_TIRE_PRESSURE = 0x19;
 
+    }
+    LightFixture = 0x016;
+    {
+        pub const GENERIC = 0x00;
+    }
+    Fan = 0x017;
+    {
+        pub const GENERIC = 0x00;
+    }
+    HVAC = 0x018;
+    {
+        pub const GENERIC = 0x00;
+    }
+    AirConditioning = 0x019;
+    {
+        pub const GENERIC = 0x00;
+    }
+    Humidifier = 0x01a;
+    {
+        pub const GENERIC = 0x00;
+    }
+    Heating = 0x01b;
+    {
+        pub const GENERIC = 0x00;
+    }
+    AccessControl = 0x1c;
+    {
+        pub const GENERIC = 0x00;
+    }
+
+    MotorizedDevice = 0x01D;
+    {
+        pub const GENERIC = 0x00;
+    }
+    PowerDevice = 0x01E;
+    {
+        pub const GENERIC = 0x00;
+    }
+    LightSource = 0x01F;
+    {
+        pub const GENERIC = 0x00;
+    }
+    WindowCovering = 0x020;
+    {
+        pub const GENERIC = 0x00;
+    }
+    AudioSink = 0x021;
+    {
+        pub const GENERIC = 0x00;
+    }
+    AudioSource = 0x022;
+    {
+        pub const GENERIC = 0x00;
+    }
+    MotorizedVehicle = 0x023;
+    {
+        pub const GENERIC = 0x00;
+    }
+    DomesticAppliance = 0x024;
+    {
+        pub const GENERIC = 0x00;
+    }
+    WearableAudioDevice = 0x025;
+    {
+        pub const GENERIC = 0x00;
+    }
+    Aircraft = 0x026;
+    {
+        pub const GENERIC = 0x00;
+    }
+    AVEquipment = 0x027;
+    {
+        pub const GENERIC = 0x00;
+    }
+    DisplayEquipment = 0x028;
+    {
+        pub const GENERIC = 0x00;
+    }
+    HearingAid = 0x029;
+    {
+        pub const GENERIC = 0x00;
+    }
+    Gaming =  0x02A;
+    {
+        pub const GENERIC = 0x00;
+    }
+    Signage =  0x02B;
+    {
+        pub const GENERIC = 0x00;
+    }
+    PulseOximeter = 0x031;
+    {
+        pub const GENERIC = 0x00;
+    }
+    WeightScale = 0x032;
+    {
+        pub const GENERIC = 0x00;
+    }
+    PersonalMobilityDevice = 0x033;
+    {
+        pub const GENERIC = 0x00;
+    }
+    ContinuousGlucoseMonitor = 0x034;
+    {
+        pub const GENERIC = 0x00;
+    }
+    InsulinPump = 0x035;
+    {
+        pub const GENERIC = 0x00;
+    }
+    MedicationDelivery = 0x036;
+    {
+        pub const GENERIC = 0x00;
+    }
+    OutdoorSportsActivity = 0x051;
+    {
+        pub const GENERIC = 0x00;
     }
 }
