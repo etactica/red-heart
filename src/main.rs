@@ -262,7 +262,7 @@ fn init_gap_and_gatt() -> Result<(), ()> {
         perform_command(|rc| rc.init_gap(Role::PERIPHERAL, false, BLE_GAP_DEVICE_NAME_LENGTH))?;
 
     // let sh, dh, ah == return parameters... if it was of the type of GapInit ReturnParameters....?
-    let (service_handle, dev_name_handle, appearence_handle) = if let ReturnParameters::Vendor(
+    let (service_handle, dev_name_handle, appearance_handle) = if let ReturnParameters::Vendor(
         stm32wb55::event::command::ReturnParameters::GapInit(stm32wb55::event::command::GapInit {
             service_handle,
             dev_name_handle,
@@ -289,16 +289,11 @@ fn init_gap_and_gatt() -> Result<(), ()> {
 
     let appearance_characteristic = Characteristic {
         service: service_handle,
-        characteristic: appearence_handle,
+        characteristic: appearance_handle,
         max_len: 4,
     };
 
-//    appearance_characteristic.set_value(&[0x80, 0x00])?;
-    //appearance_characteristic.set_value(bt_appearances::Appearance
-    let mut bytes:[u8;2] = [0;2];
-    //LittleEndian::write_u16(&mut bytes[0..2], bt_appearances::Sensor::ENERGYMETER.0);
-    LittleEndian::write_u16(&mut bytes[0..2], bt_appearances::HeartRateSensor::GENERIC.0);
-    appearance_characteristic.set_value(&bytes);
+    appearance_characteristic.set_value(&bt_appearances::HeartRateSensor::GENERIC.0.to_le_bytes());
     return Ok(());
 }
 
