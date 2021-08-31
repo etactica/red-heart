@@ -297,7 +297,7 @@ fn init_gap_and_gatt() -> Result<(), ()> {
     //appearance_characteristic.set_value(bt_appearances::Appearance
     let mut bytes:[u8;2] = [0;2];
     //LittleEndian::write_u16(&mut bytes[0..2], bt_appearances::Sensor::ENERGYMETER.0);
-    LittleEndian::write_u16(&mut bytes[0..2], bt_appearances::GENERIC_HRS.0);
+    LittleEndian::write_u16(&mut bytes[0..2], bt_appearances::HeartRateSensor::GENERIC.0);
     appearance_characteristic.set_value(&bytes);
     return Ok(());
 }
