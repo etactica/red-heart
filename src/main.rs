@@ -13,6 +13,7 @@ use core::time::Duration;
 
 use cortex_m_rt::{entry, exception};
 use nb::block;
+use byteorder::{ByteOrder, LittleEndian};
 
 use hal::{
     flash::FlashExt,
@@ -44,12 +45,12 @@ use stm32wb55::{
 mod ble;
 mod svc_dis;
 mod svc_hrs;
+mod bt_appearances;
 
 use svc_dis::{uuid, DeviceInformation, DisCharacteristic, DisService};
 use svc_hrs::{HrsService, HrsBodySensorLocation, HrsHrmFlags};
 use crate::ble::Service;
 use crate::svc_hrs::HrsMeasure;
-use core::mem::transmute;
 
 /// Advertisement interval in milliseconds.
 const ADV_INTERVAL_MS: u64 = 250;
@@ -292,7 +293,12 @@ fn init_gap_and_gatt() -> Result<(), ()> {
         max_len: 4,
     };
 
-    appearance_characteristic.set_value(&[0x80, 0x00])?;
+//    appearance_characteristic.set_value(&[0x80, 0x00])?;
+    //appearance_characteristic.set_value(bt_appearances::Appearance
+    let mut bytes:[u8;2] = [0;2];
+    //LittleEndian::write_u16(&mut bytes[0..2], bt_appearances::Sensor::ENERGYMETER.0);
+    LittleEndian::write_u16(&mut bytes[0..2], bt_appearances::GENERIC_HRS.0);
+    appearance_characteristic.set_value(&bytes);
     return Ok(());
 }
 
@@ -329,7 +335,7 @@ fn init_hrs() -> Result<HrsService, ()> {
     // analog to hrsapp_init...
     if hrs_service.with_location {
         let loc = HrsBodySensorLocation::Finger as u8;
-        hrs_service.body_sensor_location.unwrap().set_value(&loc.to_le_bytes());
+        hrs_service.body_sensor_location.as_ref().unwrap().set_value(&loc.to_le_bytes());
     }
 
     let mut hrs_measure = HrsMeasure {
@@ -337,13 +343,18 @@ fn init_hrs() -> Result<HrsService, ()> {
         energy_expended: 100,
         aRR_interval_values: [200],
         valid_intervals: 1,
-        flags: HrsHrmFlags::ValueFormatUint16 | HrsHrmFlags::SensorContactsPresent | HrsHrmFlags::SensorContactsSupport | HrsHrmFlags::EnergyExpendedPresent | HrsHrmFlags::RRIntervalPresent,
+        flags: HrsHrmFlags::VALUE_FORMAT_UINT16 | HrsHrmFlags::SENSOR_CONTACTS_PRESENT | HrsHrmFlags::SENSOR_CONTACTS_SUPPORTED | HrsHrmFlags::ENERGY_EXPENDED_PRESENT | HrsHrmFlags::RR_INTERVAL_PRESENT,
     };
     // TODO We need to keep that hrs_measure around somewhere, and get our task to start processing periodic events for it....
-    // and now we need to splat it into a u8 array too!
-    //let bytes: &[u8] = unsafe { any_as_u8_slice(&hrs_measure) };
-    let bytes: &[u8] = transmute<HrsMeasure, &[u8]>(hrs_measure);
-    hrs_service.heart_rate_measurement.set_value(bytes);
+    let mut bytes:[u8;8] = [0; 8];
+    LittleEndian::write_u16(&mut bytes[0..2], hrs_measure.value);
+    //bytes[0..2] = *hrs_measure.value.to_le_bytes();
+    LittleEndian::write_u16(&mut bytes[2..4], hrs_measure.energy_expended);
+    LittleEndian::write_u16(&mut bytes[4..6], hrs_measure.aRR_interval_values[0]);
+    bytes[6] = hrs_measure.valid_intervals;
+    bytes[7] = hrs_measure.flags.bits();
+
+    hrs_service.heart_rate_measurement.set_value(&bytes);
 
     return Ok(hrs_service);
 

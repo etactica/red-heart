@@ -7,7 +7,6 @@ use stm32wb55::{
         CharacteristicEvent, CharacteristicProperty, Commands as GattCommands, ServiceType, Uuid,
     },
 };
-use stm32wb55::gatt::Uuid::Uuid16;
 
 const UUID_HEART_RATE_SERVICE: u16 = 0x180d;
 const UUID_CLIENT_CHAR_CONFIG_DESCRIPTOR: u16 = 0x2902;
@@ -16,6 +15,7 @@ const UUID_SENSOR_LOCATION: u16 = 0x2a38;
 const UUID_CONTROL_POINT: u16 = 0x2a39;
 const UUID_BM_REQ_CHAR: [u8; 16] = [0x19, 0xed, 0x82, 0xae, 0xed, 0x21, 0x4c, 0x9d, 0x41, 0x45, 0x22, 0x8e, 0x11, 0xFE, 0x00, 0x00];
 
+#[allow(dead_code)]
 pub enum HrsBodySensorLocation {
     Other = 0,
     Chest = 1,
@@ -27,11 +27,11 @@ pub enum HrsBodySensorLocation {
 
 bitflags! {
     pub struct HrsHrmFlags: u8 {
-        const ValueFormatUint16 = 1;
-        const SensorContactsPresent = 2;
-        const SensorContactsSupport = 4;
-        const EnergyExpendedPresent = 8;
-        const RRIntervalPresent = 0x10;
+        const VALUE_FORMAT_UINT16 = 1;
+        const SENSOR_CONTACTS_PRESENT = 2;
+        const SENSOR_CONTACTS_SUPPORTED = 4;
+        const ENERGY_EXPENDED_PRESENT = 8;
+        const RR_INTERVAL_PRESENT = 0x10;
     }
 }
 
