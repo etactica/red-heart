@@ -60,8 +60,9 @@ mod bt_appearances;
 //use svc_hrs::{HrsService, HrsBodySensorLocation, HrsHrmFlags, HrsMeasure};
 
 use rtic::app;
+use stm32wb_hal::pwr::Cpu2LowPowerMode;
 
-    // Needs to hold two packets, at least 257 bytes for biggest possible HCI BLE event + header
+// Needs to hold two packets, at least 257 bytes for biggest possible HCI BLE event + header
 pub type HciCommandsQueue =
     Queue<fn(&mut RadioCoprocessor<'static, U514>, &MyAppContext), 32>;
 
@@ -124,19 +125,25 @@ const APP: () = {
         // * 64 MHz CPU1, 32 MHz CPU2
         // * 64 MHz for APB1, APB2
         // * HSI as a clock source after wake-up from low-power mode
-        let clock_config = Config::new(SysClkSrc::Pll(PllSrc::Hse(HseDivider::NotDivided)))
+        // let clock_config = Config::new(SysClkSrc::Pll(PllSrc::Hse(HseDivider::NotDivided)))
+        //     .with_lse()
+        //     .cpu1_hdiv(HDivider::NotDivided)
+        //     .cpu2_hdiv(HDivider::Div2)
+        //     .apb1_div(ApbDivider::NotDivided)
+        //     .apb2_div(ApbDivider::NotDivided)
+        //     .pll_cfg(PllConfig {
+        //         m: 2,
+        //         n: 12,
+        //         r: 3,
+        //         q: Some(4),
+        //         p: Some(3),
+        //     })
+        let clock_config = Config::new(SysClkSrc::HseSys(HseDivider::NotDivided))
             .with_lse()
             .cpu1_hdiv(HDivider::NotDivided)
-            .cpu2_hdiv(HDivider::Div2)
+            .cpu2_hdiv(HDivider::NotDivided)
             .apb1_div(ApbDivider::NotDivided)
             .apb2_div(ApbDivider::NotDivided)
-            .pll_cfg(PllConfig {
-                m: 2,
-                n: 12,
-                r: 3,
-                q: Some(4),
-                p: Some(3),
-            })
             .rtc_src(RtcClkSrc::Lse)
             .rf_wkp_sel(RfWakeupClock::Lse);
 
@@ -153,6 +160,7 @@ const APP: () = {
         let mbox = TlMbox::tl_init(&mut rcc, &mut ipcc);
 
         // Boot CPU2
+        hal::pwr::set_cpu2_lpmode(Cpu2LowPowerMode::Shutdown);
         hal::pwr::set_cpu2(true);
 
         let config = ShciBleInitCmdParam {
