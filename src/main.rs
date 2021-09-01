@@ -3,16 +3,20 @@
 #![no_std]
 #![allow(non_snake_case)]
 
-use panic_rtt_target as _;
+use panic_itm as _;
 // use panic_halt as _;
-use rtt_target::{rprintln, rtt_init_print};
+//use rtt_target::{rprintln, rtt_init_print};
 
 use stm32wb_hal as hal;
 
 use core::time::Duration;
 
+use cortex_m::peripheral::{ITM, itm};
+use cortex_m::iprintln;
 use cortex_m_rt::{entry, exception};
+use heapless::spsc::Queue;
 use nb::block;
+use bbqueue::{consts::U514, BBBuffer, ConstBBBuffer};
 use byteorder::{ByteOrder, LittleEndian};
 
 use hal::{
@@ -26,212 +30,302 @@ use hal::{
 };
 
 use bluetooth_hci::{
-    event::{command::ReturnParameters, Event},
-    host::{uart::Packet, AdvertisingFilterPolicy, EncryptionKey, Hci, OwnAddressType},
+    event::{
+        command::{CommandComplete, ReturnParameters},
+        Event},
+    host::{
+        uart::{Hci as UartHci, Packet},
+        AdvertisingFilterPolicy, EncryptionKey, Hci, OwnAddressType
+    },
     BdAddr,
+    ConnectionHandle
 };
 
-use ble::{perform_command, receive_event, setup_coprocessor, Characteristic, RadioCopro};
 use stm32wb55::{
     event::{AttReadPermitRequest, AttributeHandle, GattAttributeModified, Stm32Wb5xEvent},
     gap::{
         AdvertisingDataType, AdvertisingType, AuthenticationRequirements, Commands as GapCommands,
         DiscoverableParameters, LocalName, OutOfBandAuthentication, Pin, Role,
     },
-    gatt::{CharacteristicProperty, Commands as GattCommads, UpdateCharacteristicValueParameters},
+    gatt::{AddServiceParameters, CharacteristicProperty, Commands as GattCommads, UpdateCharacteristicValueParameters, Uuid, ServiceHandle, ServiceType, CharacteristicHandle},
     hal::{Commands as HalCommands, ConfigData, PowerLevel},
+    RadioCoprocessor,
 };
 
-mod ble;
-mod svc_dis;
-mod svc_hrs;
+//mod svc_dis;
+//mod svc_hrs;
 mod bt_appearances;
 
-use svc_dis::{uuid, DeviceInformation, DisCharacteristic, DisService};
-use svc_hrs::{HrsService, HrsBodySensorLocation, HrsHrmFlags};
-use crate::ble::Service;
-use crate::svc_hrs::HrsMeasure;
+//use svc_dis::{uuid, DeviceInformation, DisCharacteristic, DisService};
+//use svc_hrs::{HrsService, HrsBodySensorLocation, HrsHrmFlags, HrsMeasure};
+
+use rtic::app;
+
+    // Needs to hold two packets, at least 257 bytes for biggest possible HCI BLE event + header
+pub type HciCommandsQueue =
+    Queue<fn(&mut RadioCoprocessor<'static, U514>, &MyAppContext), 32>;
 
 /// Advertisement interval in milliseconds.
 const ADV_INTERVAL_MS: u64 = 250;
 
-const BT_NAME: &[u8] = b"KToy";
+const BT_NAME: &[u8] = b"KToy2";
 const BLE_GAP_DEVICE_NAME_LENGTH: u8 = BT_NAME.len() as u8;
 
-// const MY_DEVICE_INFO: DeviceInformation = DeviceInformation {
-//     fw_revision: Some("fw1.23"),
-//     manufacturer_name: Some("demo Company"),
-//     model_number: None,
-//     serial_number: None,
-//     system_id: Some("sysid69"),
-//     ieee_cert: None,
-//     hw_revision: None,
-//     sw_revision: None,
-//     pnp_id: None
-// };
-//
-
-#[entry]
-fn entry() -> ! {
-    //rtt_init_print!(BlockIfFull, 4096);
-    rtt_init_print!(NoBlockSkip, 4096);
-    run();
-
-    loop {
-        continue;
+    /// Device Information Service...
+    ///
+// Should these just be an enum?
+// Should these be directly Uuid16 types frrom upstream
+// Karl - I hate how verbose this is, there's gotta be a better way...
+    pub mod uuid {
+        pub const DEVICE_INFORMATION_SERVICE: u16 = 0x180a;
+        pub const SYSTEM_ID: u16 = 0x2a23;
+        pub const MODEL_NUMBER: u16 = 0x2a24;
+        pub const SERIAL_NUMBER: u16 = 0x2a25;
+        pub const FW_REVISION: u16 = 0x2a26;
+        pub const HW_REVISION: u16 = 0x2a27;
+        pub const SW_REVISION: u16 = 0x2a28;
+        pub const MANUFACTURER_NAME: u16 = 0x2a29;
+        pub const IEEE_CERT: u16 = 0x2a2a;
+        pub const PNP_ID: u16 = 0x2a50;
     }
+
+
+
+// We'll put stuff we want here right...?
+#[derive(Debug, Default)]
+pub struct MyAppContext {
+    gap_service_handle: Option<ServiceHandle>,
+    dis_service_handle: Option<ServiceHandle>,
+    hrs_service_handle: Option<ServiceHandle>,
+    dev_name_handle: Option<CharacteristicHandle>,
+    appearance_handle: Option<CharacteristicHandle>,
 }
 
-fn run() {
-    let dp = hal::device::Peripherals::take().unwrap();
-    let mut rcc = dp.RCC.constrain();
-    rcc.set_stop_wakeup_clock(StopWakeupClock::HSI16);
+#[app(device = stm32wb_hal::pac, peripherals = true)]
+const APP: () = {
+    struct Resources {
+        rc: RadioCoprocessor<'static, U514>,
+        hci_commands_queue: HciCommandsQueue,
+        app_context: MyAppContext,
+        stim0: &'static mut itm::Stim,
+    }
 
-    // Fastest clock configuration.
-    // * External low-speed crystal is used (LSE)
-    // * 32 MHz HSE with PLL
-    // * 64 MHz CPU1, 32 MHz CPU2
-    // * 64 MHz for APB1, APB2
-    // * HSI as a clock source after wake-up from low-power mode
-    let clock_config = Config::new(SysClkSrc::Pll(PllSrc::Hse(HseDivider::NotDivided)))
-        .with_lse()
-        .cpu1_hdiv(HDivider::NotDivided)
-        .cpu2_hdiv(HDivider::Div2)
-        .apb1_div(ApbDivider::NotDivided)
-        .apb2_div(ApbDivider::NotDivided)
-        .pll_cfg(PllConfig {
-            m: 2,
-            n: 12,
-            r: 3,
-            q: Some(4),
-            p: Some(3),
-        })
-        .rtc_src(RtcClkSrc::Lse)
-        .rf_wkp_sel(RfWakeupClock::Lse);
+    #[init]
+    fn init(cx: init::Context) -> init::LateResources {
+        //rtt_init_print!(NoBlockSkip, 4096);
+        let dp = cx.device;
 
-    let mut rcc = rcc.apply_clock_config(clock_config, &mut dp.FLASH.constrain().acr);
+        let mut rcc = dp.RCC.constrain();
+        rcc.set_stop_wakeup_clock(StopWakeupClock::HSI16);
 
-    rprintln!("Boot");
+        // Fastest clock configuration.
+        // * External low-speed crystal is used (LSE)
+        // * 32 MHz HSE with PLL
+        // * 64 MHz CPU1, 32 MHz CPU2
+        // * 64 MHz for APB1, APB2
+        // * HSI as a clock source after wake-up from low-power mode
+        let clock_config = Config::new(SysClkSrc::Pll(PllSrc::Hse(HseDivider::NotDivided)))
+            .with_lse()
+            .cpu1_hdiv(HDivider::NotDivided)
+            .cpu2_hdiv(HDivider::Div2)
+            .apb1_div(ApbDivider::NotDivided)
+            .apb2_div(ApbDivider::NotDivided)
+            .pll_cfg(PllConfig {
+                m: 2,
+                n: 12,
+                r: 3,
+                q: Some(4),
+                p: Some(3),
+            })
+            .rtc_src(RtcClkSrc::Lse)
+            .rf_wkp_sel(RfWakeupClock::Lse);
 
-    // RTC is required for proper operation of BLE stack
-    let _rtc = hal::rtc::Rtc::rtc(dp.RTC, &mut rcc);
+        let mut rcc = rcc.apply_clock_config(clock_config, &mut dp.FLASH.constrain().acr);
+        let itm = unsafe { &mut *ITM::ptr() };
+        let stim0 = &mut itm.stim[0];
 
-    let mut ipcc = dp.IPCC.constrain();
-    let mbox = TlMbox::tl_init(&mut rcc, &mut ipcc);
+        iprintln!(stim0, "Boot!");
 
-    let config = ShciBleInitCmdParam {
-        p_ble_buffer_address: 0,
-        ble_buffer_size: 0,
-        num_attr_record: 100,
-        num_attr_serv: 10,
-        attr_value_arr_size: 3500, //2788,
-        num_of_links: 8,
-        extended_packet_length_enable: 1,
-        pr_write_list_size: 0x3A,
-        mb_lock_count: 0x79,
-        att_mtu: 312,
-        slave_sca: 500,
-        master_sca: 0,
-        ls_source: 1,
-        max_conn_event_length: 0xFFFFFFFF,
-        hs_startup_time: 0x148,
-        viterbi_enable: 1,
-        ll_only: 0,
-        hw_version: 0,
-    };
+        // RTC is required for proper operation of BLE stack
+        let _rtc = hal::rtc::Rtc::rtc(dp.RTC, &mut rcc);
 
-    setup_coprocessor(config, ipcc, mbox);
+        let mut ipcc = dp.IPCC.constrain();
+        let mbox = TlMbox::tl_init(&mut rcc, &mut ipcc);
 
-    // enable interrupts -> interrupts are enabled in Ipcc::init(), which is called TlMbox::tl_init
+        // Boot CPU2
+        hal::pwr::set_cpu2(true);
 
-    // Boot CPU2
-    hal::pwr::set_cpu2(true);
+        let config = ShciBleInitCmdParam {
+            p_ble_buffer_address: 0,
+            ble_buffer_size: 0,
+            num_attr_record: 100,
+            num_attr_serv: 10,
+            attr_value_arr_size: 3500, //2788,
+            num_of_links: 8,
+            extended_packet_length_enable: 1,
+            pr_write_list_size: 0x3A,
+            mb_lock_count: 0x79,
+            att_mtu: 312,
+            slave_sca: 500,
+            master_sca: 0,
+            ls_source: 1,
+            max_conn_event_length: 0xFFFFFFFF,
+            hs_startup_time: 0x148,
+            viterbi_enable: 1,
+            ll_only: 0,
+            hw_version: 0,
+        };
 
-    let ready_event = block!(receive_event());
+        static BB: BBBuffer<U514> = BBBuffer(ConstBBBuffer::new());
+        let (producer, consumer) = BB.try_split().unwrap();
+        let rc = RadioCoprocessor::new(producer, consumer, mbox, ipcc, config);
 
-    rprintln!("Received packet: {:?}", ready_event);
+        init::LateResources {
+            rc,
+            hci_commands_queue: HciCommandsQueue::new(),
+            app_context: MyAppContext::default(),
+            stim0,
+        }
+    }
 
-    rprintln!("Resetting processor...");
+    #[idle(resources = [rc, app_context], spawn = [setup, exec_hci, event])]
+    fn idle(mut cx: idle::Context) -> ! {
+        loop {
+            cortex_m::asm::wfi();
 
-    let reset_response = perform_command(|rc| rc.reset()).expect("Failed to reset processor");
-
-    rprintln!("Received packet: {:?}", reset_response);
-
-    init_gap_and_gatt().expect("Failed to initialize GAP and GATT");
-
-    rprintln!("Succesfully initialized GAP and GATT");
-
-    let di = DeviceInformation::new(
-        Some("klabs"),
-        Some("9871234"),
-        Some("my-serial"),
-        None,
-        None,
-        Some("fw1.234"),
-        Some("my-system-id"),
-        None,
-        None,
-    );
-
-    let dis_service = init_dis(&di).expect("failed to activate DIS");
-    let hrs_service = init_hrs().expect("failed to activate heart rate service");
-
-    // Set our discovery parameters, this is "application specific" regardless of what services
-    // we've turned on
-    perform_command(|rc| {
-        rc.set_discoverable(&DISCOVERY_PARAMS)
-            .map_err(|_| nb::Error::Other(()))
-    });
-
-    loop {
-        let response = block!(receive_event());
-
-        rprintln!("Received event: {:x?}", response);
-
-        if let Ok(Packet::Event(event)) = response {
-            match event {
-                // karl - this isn't quite working...
-                Event::DisconnectionComplete(_state) => {
-                    // Enter advertising mode again
-                    // Put the device in a connectable mode
-                    perform_command(|rc| {
-                        rc.set_discoverable(&DISCOVERY_PARAMS)
-                            .map_err(|_| nb::Error::Other(()))
-                    })
-                    .expect("Failed to enable discoverable mode again");
-
-                    // perform_command(|rc| {
-                    //     rc.update_advertising_data(&ADVERTISING_DATA[..])
-                    //         .map_err(|_| nb::Error::Other(()))
-                    // })
-                    // .expect("Failed to update advertising data");
+            // At this point, an interrupt was received.
+            // Radio co-processor talks to the app via IPCC interrupts, so this interrupt
+            // may be one of the IPCC interrupts and the app can start processing events from
+            // radio co-processor here.
+            let evt = cx.resources.rc.lock(|rc| {
+                if rc.process_events() {
+                    Some(block!(rc.read()))
+                } else {
+                    None
                 }
-                // FIXME - I want some sort of "list of event handlers" that can be plugged in here?
-                // ST style has a list of handlers, and stops at the first one to say "handled"
-                _ => handle_event(&event, &dis_service, &hrs_service),
+            });
+
+            if let Some(Ok(Packet::Event(evt))) = evt {
+                if let Event::Vendor(stm32wb55::event::Stm32Wb5xEvent::CoprocessorReady(_)) = evt {
+                    // Setup BLE service when BLE co-processor is ready
+                    cx.spawn.setup().unwrap();
+                } else {
+                    cx.spawn.event(evt).unwrap();
+                    cx.spawn.exec_hci().unwrap();
+                }
             }
         }
     }
-}
 
-fn handle_event(event: &Event<Stm32Wb5xEvent>, dis: &DisService, hrs: &HrsService) {
+    #[task(resources = [rc, hci_commands_queue, stim0], spawn = [exec_hci, setup_dis])]
+    fn setup(mut cx: setup::Context) {
+        cx.resources
+            .hci_commands_queue
+            .enqueue(|rc, _| rc.reset().unwrap())
+            .ok();
 
-    if let Event::Vendor(stm_event) = event {
-        match stm_event {
-            Stm32Wb5xEvent::AttReadPermitRequest(AttReadPermitRequest {
-                                                     conn_handle,
-                                                     attribute_handle,
-                                                     offset,
-                                                 }) => {
-                rprintln!("Allowing read on ch: {:?} ah: {:?}, offset: {}", conn_handle, attribute_handle, offset);
-                perform_command(|rc| rc.allow_read(*conn_handle))
-                    .expect("Failed to allow read");
-            }
+        init_gap_and_gatt(&mut cx.resources.hci_commands_queue);
 
-            other => rprintln!("ignoring event {:?}", other),
+        iprintln!(cx.resources.stim0, "gap/gatt init complete");
+
+        // let di = DeviceInformation::new(
+        //     Some("klabs"),
+        //     Some("9871234"),
+        //     Some("my-serial"),
+        //     None,
+        //     None,
+        //     Some("fw1.234"),
+        //     Some("my-system-id"),
+        //     None,
+        //     None,
+        // );
+
+        //let dis_service = init_dis(cx.resources.hci_command_queue, &di).expect("failed to activate DIS");
+        cx.spawn.setup_dis().unwrap();
+        // let hrs_service = init_hrs().expect("failed to activate heart rate service");
+        //
+        // // Set our discovery parameters, this is "application specific" regardless of what services
+        // // we've turned on
+        // perform_command(|rc| {
+        //     rc.set_discoverable(&DISCOVERY_PARAMS)
+        //         .map_err(|_| nb::Error::Other(()))
+        // });
+
+        // Execute first HCI command from the queue
+        cx.spawn.exec_hci().unwrap();
+    }
+
+    /// Executes HCI command from the queue.
+    #[task(resources = [rc, hci_commands_queue, app_context])]
+    fn exec_hci(mut cx: exec_hci::Context) {
+        if let Some(cmd) = cx.resources.hci_commands_queue.dequeue() {
+            cmd(&mut cx.resources.rc, &cx.resources.app_context);
         }
     }
-}
+
+    /// Processes BLE events.
+    #[task(resources = [app_context, stim0])]
+    fn event(mut cx: event::Context, event: Event<stm32wb55::event::Stm32Wb5xEvent>) {
+        iprintln!(cx.resources.stim0, "Got event: {:?}", &event);
+        if let Event::CommandComplete(CommandComplete { return_params, .. }) = event {
+            match return_params {
+                ReturnParameters::Vendor(stm32wb55::event::command::ReturnParameters::GapInit(
+                                             stm32wb55::event::command::GapInit {
+                                                 service_handle,
+                                                 dev_name_handle,
+                                                 appearance_handle,
+                                                 ..
+                                             },
+                                         )) => {
+                    cx.resources.app_context.gap_service_handle = Some(service_handle);
+                    cx.resources.app_context.dev_name_handle = Some(dev_name_handle);
+                    cx.resources.app_context.appearance_handle = Some(appearance_handle);
+                }
+
+                other => {
+                    iprintln!(cx.resources.stim0, "unhandled event: {:?}", other);
+                },
+            }
+        }
+    }
+
+    #[task(resources = [rc, hci_commands_queue, app_context, stim0])]
+    fn setup_dis(mut cx: setup_dis::Context) {
+        iprintln!(cx.resources.stim0, "Pretending to setup DIS");
+        let hci = cx.resources.hci_commands_queue;
+        // ST uses max 19 attrs, 2 per char, + 1
+        hci.enqueue(|rc: &mut RadioCoprocessor<'static, U514>, cx| {
+                rc.add_service(&AddServiceParameters {
+                    service_type: ServiceType::Primary,
+                    uuid: Uuid::Uuid16(uuid::DEVICE_INFORMATION_SERVICE),
+                    max_attribute_records: 19,
+                })
+                    .unwrap()
+            });
+
+        init_advertising(hci);
+    }
+
+    /// Handles IPCC interrupt and notifies `RadioCoprocessor` code about it.
+    #[task(binds = IPCC_C1_RX_IT, resources = [rc])]
+    fn mbox_rx(cx: mbox_rx::Context) {
+        cx.resources.rc.handle_ipcc_rx();
+    }
+
+    /// Handles IPCC interrupt and notifies `RadioCoprocessor` code about it.
+    #[task(binds = IPCC_C1_TX_IT, resources = [rc])]
+    fn mbox_tx(cx: mbox_tx::Context) {
+        cx.resources.rc.handle_ipcc_tx();
+    }
+
+    // Interrupt handlers used to dispatch software tasks.
+    // One per priority.
+    extern "C" {
+        fn USART1();
+    }
+
+
+};
 
 
 #[exception]
@@ -239,79 +333,63 @@ unsafe fn DefaultHandler(irqn: i16) -> ! {
     panic!("Unhandled IRQ: {}", irqn);
 }
 
-fn init_gap_and_gatt() -> Result<(), ()> {
-    let response = perform_command(|rc: &mut RadioCopro| {
-        rc.write_config_data(&ConfigData::public_address(get_bd_addr()).build())
-    })?;
+fn init_gap_and_gatt(hci_commands_queue: &mut HciCommandsQueue) {
 
-    rprintln!("Response to write_config_data: {:?}", response);
+    hci_commands_queue
+        .enqueue(|rc, _| {
+            rc.write_config_data(&ConfigData::public_address(get_bd_addr()).build())
+                .expect("set public address");
+        });
 
-    perform_command(|rc| {
-        rc.write_config_data(&ConfigData::random_address(get_random_addr()).build())
-    })?;
+    hci_commands_queue
+        .enqueue(|rc, _| {
+            rc.write_config_data(&ConfigData::random_address(get_random_addr()).build())
+                .expect("set random address");
+        });
 
-    perform_command(|rc| rc.write_config_data(&ConfigData::identity_root(&get_irk()).build()))?;
+    hci_commands_queue
+        .enqueue(|rc, _| {
+            rc.write_config_data(&ConfigData::identity_root(&get_irk()).build())
+                .expect("set IRK address");
+        });
+    hci_commands_queue
+        .enqueue(|rc, _| {
+            rc.write_config_data(&ConfigData::encryption_root(&get_erk()).build())
+                .expect("set ERK address");
+        });
+    hci_commands_queue
+        .enqueue(|rc, _| {
+            rc.set_tx_power_level(PowerLevel::ZerodBm)
+                .expect("set TX power level")
+        });
+    hci_commands_queue
+        .enqueue(|rc, _| rc.init_gatt().expect("GATT init"));
 
-    perform_command(|rc| rc.write_config_data(&ConfigData::encryption_root(&get_erk()).build()))?;
+    hci_commands_queue
+        .enqueue(|rc, _| {
+            rc.init_gap(Role::PERIPHERAL, false, BLE_GAP_DEVICE_NAME_LENGTH)
+                .expect("GAP init")
+        });
+    hci_commands_queue
+        .enqueue(|rc, cx| {
+            rc.update_characteristic_value(&UpdateCharacteristicValueParameters {
+                service_handle: cx.gap_service_handle.expect("service handle to be set"),
+                characteristic_handle: cx.dev_name_handle.expect("dev name handle to be set"),
+                offset: 0,
+                value: BT_NAME,
+            })
+                .unwrap()
+        });
 
-    perform_command(|rc| rc.set_tx_power_level(PowerLevel::ZerodBm))?;
-
-    perform_command(|rc| rc.init_gatt())?;
-
-    let return_params =
-        perform_command(|rc| rc.init_gap(Role::PERIPHERAL, false, BLE_GAP_DEVICE_NAME_LENGTH))?;
-
-    // let sh, dh, ah == return parameters... if it was of the type of GapInit ReturnParameters....?
-    let (service_handle, dev_name_handle, appearance_handle) = if let ReturnParameters::Vendor(
-        stm32wb55::event::command::ReturnParameters::GapInit(stm32wb55::event::command::GapInit {
-            service_handle,
-            dev_name_handle,
-            appearance_handle,
-            ..
-        }),
-    ) = return_params
-    {
-        (service_handle, dev_name_handle, appearance_handle)
-    } else {
-        rprintln!("Unexpected response to init_gap command");
-        return Err(());
-    };
-
-    perform_command(|rc| {
+    hci_commands_queue.enqueue(|rc, cx| {
         rc.update_characteristic_value(&UpdateCharacteristicValueParameters {
-            service_handle,
-            characteristic_handle: dev_name_handle,
+            service_handle: cx.gap_service_handle.expect("gap sh should be set?"),
+            characteristic_handle: cx.appearance_handle.expect("appearance ch should be set?"),
+            value: &bt_appearances::HeartRateSensor::GENERIC.0.to_le_bytes(),
             offset: 0,
-            value: BT_NAME,
-        })
-        .map_err(|_| nb::Error::Other(()))
-    })?;
+        }).unwrap()
+    });
 
-    let appearance_characteristic = Characteristic {
-        service: service_handle,
-        characteristic: appearance_handle,
-        max_len: 4,
-    };
-
-    appearance_characteristic.set_value(&bt_appearances::HeartRateSensor::GENERIC.0.to_le_bytes());
-    return Ok(());
-}
-
-fn init_dis(di: &DeviceInformation) -> Result<DisService, ()> {
-    // homekit demo uses 24, st uses max 19, 2 per char, plus 1.
-    // using less than required here saves memory in the shared space I believe, so, ideally, this would
-    // check how many "real" values are configured in the "DisServiceInfo" blob....
-    let dis_service = DisService::new(svc_dis::uuid::DEVICE_INFORMATION_SERVICE, 19)?;
-    di.register(&dis_service);
-
-    // FIXME - neither of these should be in this function, it makes it hard to compose services...
-    // Disable scan response.  not even sure we need this at all.
-    // perform_command(|rc: &mut RadioCopro| {
-    //     rc.le_set_scan_response_data(&[])
-    //         .map_err(|_| nb::Error::Other(()))
-    // })?;
-
-    return Ok(dis_service);
 }
 
 // https://stackoverflow.com/questions/28127165/how-to-convert-struct-to-u8
@@ -323,37 +401,37 @@ fn init_dis(di: &DeviceInformation) -> Result<DisService, ()> {
 //     )
 // }
 
-fn init_hrs() -> Result<HrsService, ()> {
-    // analog to hrs_init
-    let hrs_service = HrsService::new(true, true, true)?;
-
-    // analog to hrsapp_init...
-    if hrs_service.with_location {
-        let loc = HrsBodySensorLocation::Finger as u8;
-        hrs_service.body_sensor_location.as_ref().unwrap().set_value(&loc.to_le_bytes());
-    }
-
-    let mut hrs_measure = HrsMeasure {
-        value: 1,
-        energy_expended: 100,
-        aRR_interval_values: [200],
-        valid_intervals: 1,
-        flags: HrsHrmFlags::VALUE_FORMAT_UINT16 | HrsHrmFlags::SENSOR_CONTACTS_PRESENT | HrsHrmFlags::SENSOR_CONTACTS_SUPPORTED | HrsHrmFlags::ENERGY_EXPENDED_PRESENT | HrsHrmFlags::RR_INTERVAL_PRESENT,
-    };
-    // TODO We need to keep that hrs_measure around somewhere, and get our task to start processing periodic events for it....
-    let mut bytes:[u8;8] = [0; 8];
-    LittleEndian::write_u16(&mut bytes[0..2], hrs_measure.value);
-    //bytes[0..2] = *hrs_measure.value.to_le_bytes();
-    LittleEndian::write_u16(&mut bytes[2..4], hrs_measure.energy_expended);
-    LittleEndian::write_u16(&mut bytes[4..6], hrs_measure.aRR_interval_values[0]);
-    bytes[6] = hrs_measure.valid_intervals;
-    bytes[7] = hrs_measure.flags.bits();
-
-    hrs_service.heart_rate_measurement.set_value(&bytes);
-
-    return Ok(hrs_service);
-
-}
+// fn init_hrs() -> Result<HrsService, ()> {
+//     // analog to hrs_init
+//     let hrs_service = HrsService::new(true, true, true)?;
+//
+//     // analog to hrsapp_init...
+//     if hrs_service.with_location {
+//         let loc = HrsBodySensorLocation::Finger as u8;
+//         hrs_service.body_sensor_location.as_ref().unwrap().set_value(&loc.to_le_bytes());
+//     }
+//
+//     let mut hrs_measure = HrsMeasure {
+//         value: 1,
+//         energy_expended: 100,
+//         aRR_interval_values: [200],
+//         valid_intervals: 1,
+//         flags: HrsHrmFlags::VALUE_FORMAT_UINT16 | HrsHrmFlags::SENSOR_CONTACTS_PRESENT | HrsHrmFlags::SENSOR_CONTACTS_SUPPORTED | HrsHrmFlags::ENERGY_EXPENDED_PRESENT | HrsHrmFlags::RR_INTERVAL_PRESENT,
+//     };
+//     // TODO We need to keep that hrs_measure around somewhere, and get our task to start processing periodic events for it....
+//     let mut bytes:[u8;8] = [0; 8];
+//     LittleEndian::write_u16(&mut bytes[0..2], hrs_measure.value);
+//     //bytes[0..2] = *hrs_measure.value.to_le_bytes();
+//     LittleEndian::write_u16(&mut bytes[2..4], hrs_measure.energy_expended);
+//     LittleEndian::write_u16(&mut bytes[4..6], hrs_measure.aRR_interval_values[0]);
+//     bytes[6] = hrs_measure.valid_intervals;
+//     bytes[7] = hrs_measure.flags.bits();
+//
+//     hrs_service.heart_rate_measurement.set_value(&bytes);
+//
+//     return Ok(hrs_service);
+//
+// }
 
 fn get_bd_addr() -> BdAddr {
     let mut bytes = [0u8; 6];
@@ -411,3 +489,35 @@ const DISCOVERY_PARAMS: DiscoverableParameters = DiscoverableParameters {
     advertising_data: &[],
     conn_interval: (None, None),
 };
+
+    fn init_advertising(hci_commands_queue: &mut HciCommandsQueue) {
+        hci_commands_queue
+            .enqueue(|rc, _| {
+                rc.le_set_scan_response_data(&[])
+                    .expect("set scan response data")
+            })
+            .ok();
+
+        // Set discovery, but no advertising data yet.
+        hci_commands_queue
+            .enqueue(|rc, _| {
+                rc.set_discoverable(&DISCOVERY_PARAMS)
+                    .expect("set discoverable params")
+            })
+            .ok();
+
+        // Remove some advertisements (this is done to decrease the packet size)
+        hci_commands_queue
+            .enqueue(|rc, _| {
+                rc.delete_ad_type(AdvertisingDataType::TxPowerLevel)
+                    .expect("delete tx power ad type")
+            })
+            .ok();
+        hci_commands_queue
+            .enqueue(|rc, _| {
+                rc.delete_ad_type(AdvertisingDataType::PeripheralConnectionInterval)
+                    .expect("delete conn interval ad type")
+            })
+            .ok();
+
+    }

@@ -1,4 +1,3 @@
-use crate::ble::{Characteristic, Service};
 
 use stm32wb55::{
     event::AttributeHandle,
@@ -129,6 +128,7 @@ pub struct DisService {
 
 impl DisService {
     pub fn new(
+        hci: &mut HciCommandsQueue,
         uuid: u16,
         max_attribute_records: u8,
         //instance_id: u16,
