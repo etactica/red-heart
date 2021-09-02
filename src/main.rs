@@ -60,7 +60,11 @@ mod bt_appearances;
 //use svc_dis::{uuid, DeviceInformation, DisCharacteristic, DisService};
 //use svc_hrs::{HrsService, HrsBodySensorLocation, HrsHrmFlags, HrsMeasure};
 
-use rtic::app;
+use rtic::{
+    app,
+    cyccnt,
+    cyccnt::U32Ext,
+};
 
 // Needs to hold two packets, at least 257 bytes for biggest possible HCI BLE event + header
 pub type HciCommandsQueue =
@@ -71,6 +75,8 @@ const ADV_INTERVAL_MS: u64 = 250;
 
 const BT_NAME: &[u8] = b"KToy2";
 const BLE_GAP_DEVICE_NAME_LENGTH: u8 = BT_NAME.len() as u8;
+
+const PERIOD: u32 = 30_000_000;
 
     /// Device Information Service...
     ///
@@ -100,9 +106,10 @@ pub struct MyAppContext {
     hrs_service_handle: Option<ServiceHandle>,
     dev_name_handle: Option<CharacteristicHandle>,
     appearance_handle: Option<CharacteristicHandle>,
+    ad_cnt: u8,
 }
 
-#[app(device = stm32wb_hal::pac, peripherals = true)]
+#[app(device = stm32wb_hal::pac, peripherals = true, monotonic = rtic::cyccnt::CYCCNT)]
 const APP: () = {
     struct Resources {
         rc: RadioCoprocessor<'static, U514>,
@@ -215,7 +222,7 @@ const APP: () = {
             // radio co-processor here.
             let evt = cx.resources.rc.lock(|rc| {
                 if rc.process_events() {
-                    iprintln!(stim0, "processed");
+                    // iprintln!(stim0, "processed");
                     Some(block!(rc.read()))
                 } else {
                     None
@@ -234,7 +241,7 @@ const APP: () = {
         }
     }
 
-    #[task(resources = [rc, hci_commands_queue, stim0], spawn = [exec_hci, setup_dis])]
+    #[task(resources = [rc, hci_commands_queue, stim0], spawn = [exec_hci, setup_dis], schedule=[update_advertising_hack])]
     fn setup(mut cx: setup::Context) {
 
         // let rc: RadioCoprocessor<'static, U514> = cx.resources.rc;
@@ -275,12 +282,15 @@ const APP: () = {
 
         // Execute first HCI command from the queue
         cx.spawn.exec_hci().unwrap();
+
+        cx.schedule.update_advertising_hack(cx.scheduled + PERIOD.cycles()).unwrap();
+
     }
 
     /// Executes HCI command from the queue.
     #[task(resources = [rc, hci_commands_queue, app_context, stim0])]
     fn exec_hci(mut cx: exec_hci::Context) {
-        iprintln!(cx.resources.stim0, "exec_hci");
+        // iprintln!(cx.resources.stim0, "exec_hci");
         if let Some(cmd) = cx.resources.hci_commands_queue.dequeue() {
             cmd(&mut cx.resources.rc, &cx.resources.app_context);
         }
@@ -327,6 +337,38 @@ const APP: () = {
             });
 
         init_advertising(hci);
+    }
+
+    #[task(resources = [rc, hci_commands_queue, app_context, stim0], schedule=[update_advertising_hack])]
+    fn update_advertising_hack(mut cx: update_advertising_hack::Context) {
+        let ac: &mut MyAppContext = cx.resources.app_context;
+        iprintln!(cx.resources.stim0, "updating advertising: {}", ac.ad_cnt);
+        let hci = cx.resources.hci_commands_queue;
+        // ST uses max 19 attrs, 2 per char, + 1
+        let cnt = 42;
+
+        hci.enqueue(|rc: &mut RadioCoprocessor<'static, U514>, cx| {
+            let cnt = cx.ad_cnt;
+            let mut service_data = [0u8; 10];
+            service_data[0] = 9;
+            service_data[1] = AdvertisingDataType::ManufacturerSpecificData as u8;
+            service_data[2] = 0x99;
+            service_data[3] = 0x09; // eTactica ehf company code
+            service_data[4] = cnt;
+            service_data[5] = 255 - cnt;
+            service_data[6] = cnt;
+            service_data[7] = 255 - cnt;
+            service_data[8] = 0xca;
+            service_data[9] = 0xfe;
+
+            rc.update_advertising_data(&service_data)
+                    .expect("set scan response data")
+            })
+            .ok();
+
+        ac.ad_cnt += 1;
+
+            cx.schedule.update_advertising_hack(cx.scheduled + PERIOD.cycles()).unwrap();
     }
 
     /// Handles IPCC interrupt and notifies `RadioCoprocessor` code about it.
