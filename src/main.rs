@@ -26,6 +26,7 @@ use hal::{
         ApbDivider, Config, HDivider, HseDivider, PllConfig, PllSrc, RfWakeupClock, RtcClkSrc,
         StopWakeupClock, SysClkSrc,
     },
+    pwr::Cpu2LowPowerMode,
     tl_mbox::{lhci::LhciC1DeviceInformationCcrp, shci::ShciBleInitCmdParam, TlMbox},
 };
 
@@ -60,7 +61,6 @@ mod bt_appearances;
 //use svc_hrs::{HrsService, HrsBodySensorLocation, HrsHrmFlags, HrsMeasure};
 
 use rtic::app;
-use stm32wb_hal::pwr::Cpu2LowPowerMode;
 
 // Needs to hold two packets, at least 257 bytes for biggest possible HCI BLE event + header
 pub type HciCommandsQueue =
@@ -125,25 +125,25 @@ const APP: () = {
         // * 64 MHz CPU1, 32 MHz CPU2
         // * 64 MHz for APB1, APB2
         // * HSI as a clock source after wake-up from low-power mode
-        // let clock_config = Config::new(SysClkSrc::Pll(PllSrc::Hse(HseDivider::NotDivided)))
-        //     .with_lse()
-        //     .cpu1_hdiv(HDivider::NotDivided)
-        //     .cpu2_hdiv(HDivider::Div2)
-        //     .apb1_div(ApbDivider::NotDivided)
-        //     .apb2_div(ApbDivider::NotDivided)
-        //     .pll_cfg(PllConfig {
-        //         m: 2,
-        //         n: 12,
-        //         r: 3,
-        //         q: Some(4),
-        //         p: Some(3),
-        //     })
-        let clock_config = Config::new(SysClkSrc::HseSys(HseDivider::NotDivided))
+        let clock_config = Config::new(SysClkSrc::Pll(PllSrc::Hse(HseDivider::NotDivided)))
             .with_lse()
             .cpu1_hdiv(HDivider::NotDivided)
-            .cpu2_hdiv(HDivider::NotDivided)
+            .cpu2_hdiv(HDivider::Div2)
             .apb1_div(ApbDivider::NotDivided)
             .apb2_div(ApbDivider::NotDivided)
+            .pll_cfg(PllConfig {
+                m: 2,
+                n: 12,
+                r: 3,
+                q: Some(4),
+                p: Some(3),
+            })
+        // let clock_config = Config::new(SysClkSrc::HseSys(HseDivider::NotDivided))
+        //     .with_lse()
+        //     .cpu1_hdiv(HDivider::NotDivided)
+        //     .cpu2_hdiv(HDivider::NotDivided)
+        //     .apb1_div(ApbDivider::NotDivided)
+        //     .apb2_div(ApbDivider::NotDivided)
             .rtc_src(RtcClkSrc::Lse)
             .rf_wkp_sel(RfWakeupClock::Lse);
 
@@ -186,7 +186,11 @@ const APP: () = {
 
         static BB: BBBuffer<U514> = BBBuffer(ConstBBBuffer::new());
         let (producer, consumer) = BB.try_split().unwrap();
+        // TODO - can't get the mbox out of this again as it's now owned? so can't call wireless_fw_info?
         let rc = RadioCoprocessor::new(producer, consumer, mbox, ipcc, config);
+
+        let mut cp = cx.core;
+        cp.SCB.set_sleepdeep();
 
         init::LateResources {
             rc,
@@ -198,8 +202,12 @@ const APP: () = {
 
     #[idle(resources = [rc, app_context], spawn = [setup, exec_hci, event])]
     fn idle(mut cx: idle::Context) -> ! {
+        // Idle doesn't have access to resources the same way? hate this though.
+        let itm = unsafe { &mut *ITM::ptr() };
+        let stim0 = &mut itm.stim[0];
         loop {
             cortex_m::asm::wfi();
+            iprintln!(stim0, "woke!");
 
             // At this point, an interrupt was received.
             // Radio co-processor talks to the app via IPCC interrupts, so this interrupt
@@ -207,6 +215,7 @@ const APP: () = {
             // radio co-processor here.
             let evt = cx.resources.rc.lock(|rc| {
                 if rc.process_events() {
+                    iprintln!(stim0, "processed");
                     Some(block!(rc.read()))
                 } else {
                     None
@@ -227,6 +236,11 @@ const APP: () = {
 
     #[task(resources = [rc, hci_commands_queue, stim0], spawn = [exec_hci, setup_dis])]
     fn setup(mut cx: setup::Context) {
+
+        // let rc: RadioCoprocessor<'static, U514> = cx.resources.rc;
+        // iprintln!(stim0, "wireless fw info: {:?}", &mbox.wireless_fw_info());
+
+
         cx.resources
             .hci_commands_queue
             .enqueue(|rc, _| rc.reset().unwrap())
@@ -264,8 +278,9 @@ const APP: () = {
     }
 
     /// Executes HCI command from the queue.
-    #[task(resources = [rc, hci_commands_queue, app_context])]
+    #[task(resources = [rc, hci_commands_queue, app_context, stim0])]
     fn exec_hci(mut cx: exec_hci::Context) {
+        iprintln!(cx.resources.stim0, "exec_hci");
         if let Some(cmd) = cx.resources.hci_commands_queue.dequeue() {
             cmd(&mut cx.resources.rc, &cx.resources.app_context);
         }
